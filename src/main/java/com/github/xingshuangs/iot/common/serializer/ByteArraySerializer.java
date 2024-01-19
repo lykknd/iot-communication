@@ -25,6 +25,7 @@
 package com.github.xingshuangs.iot.common.serializer;
 
 
+import cn.hutool.core.util.ReflectUtil;
 import com.github.xingshuangs.iot.common.buff.ByteReadBuff;
 import com.github.xingshuangs.iot.common.buff.ByteWriteBuff;
 import com.github.xingshuangs.iot.common.buff.EByteBuffFormat;
@@ -33,6 +34,7 @@ import com.github.xingshuangs.iot.utils.BooleanUtil;
 
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -55,7 +57,7 @@ public class ByteArraySerializer implements IByteArraySerializable {
     @Override
     public <T> T toObject(final Class<T> targetClass, final byte[] src) {
         try {
-            final T bean = targetClass.newInstance();
+            final T bean = targetClass.getDeclaredConstructor().newInstance();
             for (final Field field : targetClass.getDeclaredFields()) {
                 final ByteArrayVariable variable = field.getAnnotation(ByteArrayVariable.class);
                 if (variable == null) {
@@ -163,6 +165,7 @@ public class ByteArraySerializer implements IByteArraySerializable {
     private <T> void extractData(byte[] src, T bean, Field field, ByteArrayParameter variable) throws IllegalAccessException {
         ByteReadBuff buff = new ByteReadBuff(src, 0, variable.isLittleEndian(), EByteBuffFormat.DC_BA);
         field.setAccessible(true);
+
         switch (variable.getType()) {
             case BOOL:
                 List<Boolean> booleans = IntStream.range(0, variable.getCount())
@@ -171,58 +174,87 @@ public class ByteArraySerializer implements IByteArraySerializable {
                             int bitAdd = (variable.getBitOffset() + x) % 8;
                             return buff.getBoolean(byteAdd, bitAdd);
                         }).collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? booleans.get(0) : booleans);
+                setBeanValue(bean,field,variable.getCount() == 1 ? booleans.get(0) : booleans);
                 break;
             case BYTE:
                 List<Byte> bytes = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getByte(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? bytes.get(0) : bytes);
+                setBeanValue(bean,field,variable.getCount() == 1 ? bytes.get(0) : bytes);
                 break;
             case UINT16:
                 List<Integer> uint16s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getUInt16(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? uint16s.get(0) : uint16s);
+                setBeanValue(bean,field,variable.getCount() == 1 ? uint16s.get(0) : uint16s);
                 break;
             case INT16:
                 List<Short> int16s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getInt16(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? int16s.get(0) : int16s);
+                setBeanValue(bean,field,variable.getCount() == 1 ? int16s.get(0) : int16s);
                 break;
             case UINT32:
                 List<Long> uint32s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getUInt32(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? uint32s.get(0) : uint32s);
+                setBeanValue(bean,field,variable.getCount() == 1 ? uint32s.get(0) : uint32s);
                 break;
             case INT32:
                 List<Integer> int32s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getInt32(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? int32s.get(0) : int32s);
+                setBeanValue(bean,field,variable.getCount() == 1 ? int32s.get(0) : int32s);
                 break;
             case FLOAT32:
                 List<Float> float32s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getFloat32(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? float32s.get(0) : float32s);
+                setBeanValue(bean, field,variable.getCount() == 1 ? float32s.get(0) : float32s);
                 break;
             case FLOAT64:
                 List<Double> float64s = IntStream.range(0, variable.getCount())
                         .mapToObj(x -> buff.getFloat64(variable.getByteOffset() + x * variable.getType().getByteLength()))
                         .collect(Collectors.toList());
-                field.set(bean, variable.getCount() == 1 ? float64s.get(0) : float64s);
+                setBeanValue(bean,field, variable.getCount() == 1 ? float64s.get(0) : float64s);
                 break;
             case STRING:
-                field.set(bean, buff.getString(variable.getByteOffset(), variable.getCount()));
+                setBeanValue(bean,field, buff.getString(variable.getByteOffset(), variable.getCount()));
+                break;
+            case DTL:
+                ByteReadBuff temp = ByteReadBuff.newInstance(buff.getBytes(variable.getByteOffset(), 12));
+                int year = temp.getUInt16();
+                int month = temp.getByteToInt();
+                int dayOfMonth = temp.getByteToInt();
+                int week = temp.getByteToInt();
+                int hour = temp.getByteToInt();
+                int minute = temp.getByteToInt();
+                int second = temp.getByteToInt();
+                long nanoOfSecond = temp.getUInt32();
+                setBeanValue(bean,field, LocalDateTime.of(year, month, dayOfMonth, hour, minute, second, (int) nanoOfSecond));
                 break;
             default:
                 throw new ByteArrayParseException("提取数据的时候无法识别数据类型");
         }
     }
 
+    /**
+     * 调用set方法进行赋值可以在其中进行格式转换以适应系统
+     * 如果没有找到对应的set方法，使用反射方法进行赋值
+     * @param bean
+     * @param field
+     * @param value
+     * @param <T>
+     * @throws IllegalAccessException
+     */
+    private <T> void setBeanValue(T bean, Field field, Object value) throws IllegalAccessException {
+        String name = Character.toUpperCase(field.getName().charAt(0)) + field.getName().substring(1);
+        try {
+            ReflectUtil.invoke(bean, "set" + name, value);
+        } catch (Exception e) {
+            field.set(bean, value);
+        }
+    }
     /**
      * 校验字节数组注解的参数
      *
